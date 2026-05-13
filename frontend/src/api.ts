@@ -1,6 +1,6 @@
 import {
   Project, Session, Plan, GitStatus, DiffResult, ScheduledMessage,
-  RepoContext, RepoTree, RepoFileContent,
+  RepoContext, RepoTree, RepoFileContent, CodexConversation,
 } from './types';
 
 let authToken = localStorage.getItem('codex_auth_token') || '';
@@ -53,6 +53,10 @@ export const api = {
 
   getProjects: () => req<Project[]>('GET', '/projects'),
   getRepoContext: (id: string) => req<RepoContext>('GET', `/projects/${id}/context`),
+  getCodexConversations: (id: string) =>
+    req<CodexConversation[]>('GET', `/projects/${id}/codex-conversations`),
+  resumeCodexConversation: (projectId: string, conversationId: string) =>
+    req<Session>('POST', `/projects/${projectId}/codex-conversations/${encodeURIComponent(conversationId)}/resume`),
   getProject: (id: string) => req<Project>('GET', `/projects/${id}`),
 
   getSessions: () => req<Session[]>('GET', '/sessions'),

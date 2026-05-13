@@ -1,7 +1,7 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import {
   Project, Session, Plan, GitStatus, DiffResult, ScheduledMessage,
-  RepoContext, RepoTree, RepoFileContent,
+  RepoContext, RepoTree, RepoFileContent, CodexConversation,
 } from './types';
 
 const BASE_URL_KEY = 'codex_base_url';
@@ -74,6 +74,13 @@ export const api = {
 
   getProjects: () => req<Project[]>('GET', '/projects'),
   getRepoContext: (id: string) => req<RepoContext>('GET', `/projects/${id}/context`),
+  getCodexConversations: (id: string) =>
+    req<CodexConversation[]>('GET', `/projects/${id}/codex-conversations`),
+  resumeCodexConversation: (projectId: string, conversationId: string) =>
+    req<Session>(
+      'POST',
+      `/projects/${projectId}/codex-conversations/${encodeURIComponent(conversationId)}/resume`,
+    ),
   getProject: (id: string) => req<Project>('GET', `/projects/${id}`),
 
   getSessions: () => req<Session[]>('GET', '/sessions'),
