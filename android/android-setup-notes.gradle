@@ -1,0 +1,42 @@
+// ─── android/app/build.gradle reference ───────────────────────────────────
+// Standard React Native 0.73 Android config.
+// Run `npx react-native init codexremote --template react-native-template-typescript`
+// then replace src/ and App.tsx with this project's files.
+//
+// Required after init:
+//
+//   1. Add to android/app/src/main/AndroidManifest.xml inside <application>:
+//      <uses-permission android:name="android.permission.INTERNET" />
+//      <uses-permission android:name="android.permission.VIBRATE" />
+//
+//   2. For react-native-vector-icons, add to android/app/build.gradle:
+//      apply from: "../../node_modules/react-native-vector-icons/fonts.gradle"
+//
+//   3. For react-native-haptic-feedback - auto-linked, no extra config needed.
+//
+//   4. Set minSdkVersion to 26+ in android/build.gradle if not already set.
+//
+// The app targets Android 8+ (API 26) and works over Tailscale (cleartext
+// traffic to local IPs is allowed by default in debug builds).
+//
+// For release builds, add a network_security_config.xml to allow cleartext
+// to your Tailscale CGNAT range (100.x.x.x):
+
+/*
+  android/app/src/main/res/xml/network_security_config.xml:
+
+  <?xml version="1.0" encoding="utf-8"?>
+  <network-security-config>
+    <domain-config cleartextTrafficPermitted="true">
+      <domain includeSubdomains="false">100.64.0.0/10</domain>
+    </domain-config>
+    <domain-config cleartextTrafficPermitted="true">
+      <domain includeSubdomains="true">localhost</domain>
+    </domain-config>
+  </network-security-config>
+
+  Then in AndroidManifest.xml <application> tag:
+  android:networkSecurityConfig="@xml/network_security_config"
+*/
+
+// No actual Gradle content — this file is a setup reference only.

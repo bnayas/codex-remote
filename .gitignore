@@ -1,0 +1,32 @@
+# Dependencies
+node_modules/
+backend/node_modules/
+frontend/node_modules/
+android/node_modules/
+scratch/node_modules/
+
+# Build output
+backend/dist/
+frontend/dist/
+android/android/app/build/
+android/android/build/
+android/android/.gradle/
+
+# Local secrets and machine-specific config
+.env
+*.env
+backend/.env
+android/android/local.properties
+
+# Logs and test artifacts
+*.log
+live_test_success.txt
+lighthouse-report.json
+frontend/lighthouse-report.json
+scratch/
+
+# Local emulator screenshots
+emulator*.png
+
+# OS/editor noise
+.DS_Store
