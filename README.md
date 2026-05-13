@@ -129,6 +129,19 @@ npm run dev
 4. Enter your auth token
 5. Add to home screen for PWA install
 
+## Smoke Tests
+
+Run the terminal smoke test from the backend package:
+
+```bash
+cd backend
+npm run smoke:terminal
+```
+
+The test starts an isolated backend on a random local port, creates a temporary
+project, opens WebSocket streams for the agent PTY and shell terminal, sends
+markers through both channels, and verifies the streamed output.
+
 ## API Reference
 
 | Method | Path | Description |
