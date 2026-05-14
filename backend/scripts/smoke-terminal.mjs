@@ -85,8 +85,31 @@ async function main() {
     }),
   });
 
+  const existingTerminals = await request(baseUrl, 'GET', `/sessions/${sessionId}/terminals`);
+  if (!Array.isArray(existingTerminals) || existingTerminals.length < 1) {
+    throw new Error('Expected at least one shell terminal');
+  }
+
+  const secondTerminal = await request(baseUrl, 'POST', `/sessions/${sessionId}/terminals`, {
+    title: 'Smoke Terminal 2',
+  });
+  if (!secondTerminal.id || secondTerminal.id === existingTerminals[0].id) {
+    throw new Error('New terminal response did not include a distinct id');
+  }
+
+  const secondMarker = `shell2-smoke-${Date.now()}`;
+  await expectStreamOutput({
+    url: wsUrl(baseUrl, `/sessions/${sessionId}/terminals/${secondTerminal.id}/stream`),
+    label: 'second shell',
+    marker: secondMarker,
+    trigger: () => request(baseUrl, 'POST', `/sessions/${sessionId}/terminals/${secondTerminal.id}/input`, {
+      text: `printf '${secondMarker}\\n'`,
+    }),
+  });
+
   await request(baseUrl, 'POST', `/sessions/${sessionId}/kill-tree`, { confirm: true }).catch(() => {});
   await request(baseUrl, 'POST', `/sessions/${sessionId}/shell/kill-tree`, { confirm: true }).catch(() => {});
+  await request(baseUrl, 'POST', `/sessions/${sessionId}/terminals/${secondTerminal.id}/kill-tree`, { confirm: true }).catch(() => {});
 
   console.log('terminal smoke test passed');
 }

@@ -1,12 +1,14 @@
 import { FastifyInstance, FastifyRequest } from 'fastify';
 import type { SocketStream } from '@fastify/websocket';
 import { WebSocket } from 'ws';
-import { getSessionById } from '../db';
+import { getSessionById, getShellTerminalById } from '../db';
 import {
   getSessionEmitter, getRecentOutput, isSessionAlive,
   resizePty, writeToSession,
   getShellEmitter, getShellRecentOutput, isShellAlive,
-  resizeShellPty, writeToShell, ensureShellSession
+  resizeShellPty, writeToShell, ensureShellSession,
+  ensureShellTerminal, getShellTerminalEmitter, getShellTerminalRecentOutput,
+  isShellTerminalAlive, resizeShellTerminalPty, writeToShellTerminal
 } from '../ptyManager';
 import { getGitStatus } from '../git';
 import { AgentParser } from '../agentParser';
@@ -190,6 +192,83 @@ export async function registerWsRoutes(app: FastifyInstance): Promise<void> {
             writeToShell(sessionId, msg.text);
           } else if (msg.type === 'resize') {
             resizeShellPty(sessionId, (msg.cols as number) || 120, (msg.rows as number) || 40);
+          } else if (msg.type === 'ping') {
+            send({ type: 'pong', timestamp: new Date().toISOString() });
+          }
+        } catch { /**/ }
+      });
+
+      const cleanup = () => {
+        if (emitter && onData) emitter.off('data', onData);
+        if (emitter && onExit) emitter.off('exit', onExit);
+      };
+
+      socket.on('close', cleanup);
+      socket.on('error', cleanup);
+    }
+  );
+
+  app.get(
+    '/sessions/:sessionId/terminals/:terminalId/stream',
+    { websocket: true },
+    async (connection: SocketStream, req: FastifyRequest<{ Params: { sessionId: string; terminalId: string }; Querystring: { token?: string } }>) => {
+      const socket = connection.socket;
+      const { sessionId, terminalId } = req.params;
+      const session = getSessionById(sessionId);
+      const terminal = getShellTerminalById(terminalId);
+
+      if (!session || !terminal || terminal.sessionId !== sessionId) {
+        socket.send(JSON.stringify({ type: 'error', message: 'Terminal not found' }));
+        socket.close();
+        return;
+      }
+
+      ensureShellTerminal(terminalId);
+
+      const send = (msg: object) => {
+        if (socket.readyState === WebSocket.OPEN) {
+          socket.send(JSON.stringify(msg));
+        }
+      };
+
+      send({
+        type: 'connected',
+        sessionId,
+        terminalId,
+        status: isShellTerminalAlive(terminalId) ? 'running' : 'exited',
+        alive: isShellTerminalAlive(terminalId),
+        timestamp: new Date().toISOString(),
+      });
+
+      const scrollback = getShellTerminalRecentOutput(terminalId, 300);
+      if (scrollback.length > 0) {
+        send({ type: 'scrollback', lines: scrollback });
+      }
+
+      const emitter = getShellTerminalEmitter(terminalId);
+      let onData: ((data: string) => void) | undefined;
+      let onExit: ((info: { exitCode: number | null; status: string }) => void) | undefined;
+
+      if (emitter) {
+        onData = (data: string) => {
+          send({ type: 'output', data });
+        };
+        onExit = (info) => {
+          send({ type: 'exit', ...info, timestamp: new Date().toISOString() });
+        };
+        emitter.on('data', onData);
+        emitter.on('exit', onExit);
+      } else {
+        send({ type: 'status', status: terminal.status, alive: false });
+      }
+
+      socket.on('message', (raw: Buffer) => {
+        try {
+          const msg = JSON.parse(raw.toString()) as { type: string; [k: string]: unknown };
+          if (msg.type === 'input' && typeof msg.text === 'string') {
+            writeToShellTerminal(terminalId, msg.text);
+          } else if (msg.type === 'resize') {
+            resizeShellTerminalPty(terminalId, (msg.cols as number) || 120, (msg.rows as number) || 40);
           } else if (msg.type === 'ping') {
             send({ type: 'pong', timestamp: new Date().toISOString() });
           }

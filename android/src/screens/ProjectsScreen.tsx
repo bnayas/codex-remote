@@ -88,7 +88,7 @@ export default function ProjectsScreen({ navigation }: Props) {
             )}
           </View>
         )}
-        {!latest && <Text style={styles.metaDim}>No sessions yet</Text>}
+        {!latest && <Text style={styles.metaDim}>No remote runs yet</Text>}
       </TouchableOpacity>
     );
   }

@@ -6,7 +6,9 @@ import treeKill from 'tree-kill';
 import { v4 as uuidv4 } from 'uuid';
 import {
   createSession, updateSessionStatus, touchSessionOutput,
-  getSessionById, ensureSessionDir, Session
+  getSessionById, ensureSessionDir, Session,
+  createShellTerminal, getShellTerminalById, getShellTerminalsBySession,
+  updateShellTerminalStatus, touchShellTerminalOutput, ShellTerminal
 } from './db';
 import { ProjectConfig } from './config';
 
@@ -27,9 +29,11 @@ interface LivePty {
   ptyProcess: pty.IPty;
   logStream: fs.WriteStream;
   id: string;
+  sessionId: string;
   channel: PtyChannel;
   status: Session['status'];
   recentLines: string[];
+  pendingLine: string;
 }
 
 const MAX_RECENT = 500;
@@ -49,15 +53,11 @@ function shellCommand(): { command: string; args: string[] } {
   return { command: process.env.SHELL || '/bin/zsh', args: [] };
 }
 
-function logPathFor(session: Session, channel: PtyChannel): string {
-  if (channel === 'agent') return session.scrollbackPath;
-  return path.join(path.dirname(session.scrollbackPath), 'shell.log');
-}
-
 function appendRecent(live: LivePty, bufferRef: { current: string }, data: string): void {
   bufferRef.current += data;
   const parts = bufferRef.current.split('\n');
   bufferRef.current = parts.pop() ?? '';
+  live.pendingLine = bufferRef.current;
   for (const line of parts) {
     live.recentLines.push(line);
     if (live.recentLines.length > MAX_RECENT) live.recentLines.shift();
@@ -76,6 +76,11 @@ function finalizeLivePty(live: LivePty, exitCode: number | null, status?: Sessio
       exitCode: exitCode ?? undefined,
       endedAt: new Date().toISOString(),
     });
+  } else {
+    updateShellTerminalStatus(live.id, live.status, {
+      exitCode: exitCode ?? undefined,
+      endedAt: new Date().toISOString(),
+    });
   }
 
   live.emitter.emit('exit', { exitCode, status: live.status });
@@ -83,6 +88,7 @@ function finalizeLivePty(live: LivePty, exitCode: number | null, status?: Sessio
 }
 
 function spawnLivePty(opts: {
+  id: string;
   sessionId: string;
   channel: PtyChannel;
   command: string;
@@ -107,12 +113,14 @@ function spawnLivePty(opts: {
     emitter,
     ptyProcess,
     logStream,
-    id: opts.sessionId,
+    id: opts.id,
+    sessionId: opts.sessionId,
     channel: opts.channel,
     status: 'running',
     recentLines: [],
+    pendingLine: '',
   };
-  registry(opts.channel).set(opts.sessionId, live);
+  registry(opts.channel).set(opts.id, live);
 
   const lineBuffer = { current: '' };
 
@@ -125,24 +133,25 @@ function spawnLivePty(opts: {
     appendRecent(live, lineBuffer, data);
     emitter.emit('data', data);
 
-    if (opts.channel === 'agent') {
-      if (!touchTimer) {
-        touchSessionOutput(opts.sessionId);
-        touchTimer = setTimeout(() => {
-          touchTimer = null;
-          if (touchPending) {
-            touchPending = false;
-            touchSessionOutput(opts.sessionId);
-          }
-        }, 2000);
-      } else {
-        touchPending = true;
-      }
+    if (!touchTimer) {
+      if (opts.channel === 'agent') touchSessionOutput(opts.sessionId);
+      else touchShellTerminalOutput(opts.id);
+      touchTimer = setTimeout(() => {
+        touchTimer = null;
+        if (touchPending) {
+          touchPending = false;
+          if (opts.channel === 'agent') touchSessionOutput(opts.sessionId);
+          else touchShellTerminalOutput(opts.id);
+        }
+      }, 2000);
+    } else {
+      touchPending = true;
     }
 
     const event = {
       t: new Date().toISOString(),
       k: opts.channel === 'agent' ? 'output' : 'shell_output',
+      terminalId: opts.channel === 'shell' ? opts.id : undefined,
       d: data,
     };
     fs.appendFile(opts.eventsPath, JSON.stringify(event) + '\n', () => {});
@@ -168,7 +177,11 @@ export function isSessionAlive(sessionId: string): boolean {
 }
 
 export function isShellAlive(sessionId: string): boolean {
-  return liveShellSessions.has(sessionId);
+  return getShellTerminalsBySession(sessionId).some(t => liveShellSessions.has(t.id));
+}
+
+export function isShellTerminalAlive(terminalId: string): boolean {
+  return liveShellSessions.has(terminalId);
 }
 
 export function getSessionEmitter(sessionId: string): EventEmitter | undefined {
@@ -176,55 +189,139 @@ export function getSessionEmitter(sessionId: string): EventEmitter | undefined {
 }
 
 export function getShellEmitter(sessionId: string): EventEmitter | undefined {
-  return liveShellSessions.get(sessionId)?.emitter;
+  const terminal = getDefaultShellTerminal(sessionId);
+  return terminal ? liveShellSessions.get(terminal.id)?.emitter : undefined;
+}
+
+export function getShellTerminalEmitter(terminalId: string): EventEmitter | undefined {
+  return liveShellSessions.get(terminalId)?.emitter;
+}
+
+function shellLogPath(session: Session, terminalId: string, legacy = false): string {
+  const sessionDir = path.dirname(session.scrollbackPath);
+  if (legacy) return path.join(sessionDir, 'shell.log');
+  const shellsDir = path.join(sessionDir, 'shells');
+  fs.mkdirSync(shellsDir, { recursive: true });
+  return path.join(shellsDir, `${terminalId}.log`);
+}
+
+export function getDefaultShellTerminal(sessionId: string): ShellTerminal | undefined {
+  const existing = getShellTerminalsBySession(sessionId)[0];
+  if (existing) return existing;
+
+  const session = getSessionById(sessionId);
+  if (!session) return undefined;
+
+  const terminalId = uuidv4();
+  return createShellTerminal({
+    id: terminalId,
+    sessionId,
+    title: 'Terminal 1',
+    status: 'starting',
+    scrollbackPath: shellLogPath(session, terminalId, true),
+  });
+}
+
+export function listShellTerminals(sessionId: string): ShellTerminal[] {
+  getDefaultShellTerminal(sessionId);
+  return getShellTerminalsBySession(sessionId).map(t => ({
+    ...t,
+    status: liveShellSessions.has(t.id) ? 'running' : t.status,
+  }));
 }
 
 export function ensureShellSession(sessionId: string): boolean {
-  if (liveShellSessions.has(sessionId)) return true;
+  const terminal = getDefaultShellTerminal(sessionId);
+  if (!terminal) return false;
+  return ensureShellTerminal(terminal.id);
+}
 
-  const session = getSessionById(sessionId);
+export function ensureShellTerminal(terminalId: string): boolean {
+  if (liveShellSessions.has(terminalId)) return true;
+  const terminal = getShellTerminalById(terminalId);
+  if (!terminal) return false;
+  if (terminal.status === 'exited' || terminal.status === 'killed' || terminal.status === 'error') {
+    return false;
+  }
+  const session = getSessionById(terminal.sessionId);
   if (!session) return false;
 
   const shell = shellCommand();
   try {
     spawnLivePty({
-      sessionId,
+      id: terminal.id,
+      sessionId: terminal.sessionId,
       channel: 'shell',
       command: shell.command,
       args: shell.args,
       cwd: session.repoPath,
-      logPath: logPathFor(session, 'shell'),
+      logPath: terminal.scrollbackPath,
       eventsPath: path.join(path.dirname(session.scrollbackPath), 'events.jsonl'),
     });
+    updateShellTerminalStatus(terminal.id, 'running');
     return true;
   } catch (err) {
-    console.warn(`Failed to start shell PTY for session ${sessionId}:`, (err as Error).message);
+    updateShellTerminalStatus(terminal.id, 'error');
+    console.warn(`Failed to start shell terminal ${terminal.id}:`, (err as Error).message);
     return false;
   }
 }
 
+export function createShellTerminalForSession(sessionId: string, title?: string): ShellTerminal | undefined {
+  const session = getSessionById(sessionId);
+  if (!session) return undefined;
+
+  const count = getShellTerminalsBySession(sessionId).length;
+  const terminalId = uuidv4();
+  const terminal = createShellTerminal({
+    id: terminalId,
+    sessionId,
+    title: title?.trim() || `Terminal ${count + 1}`,
+    status: 'starting',
+    scrollbackPath: shellLogPath(session, terminalId),
+  });
+  ensureShellTerminal(terminal.id);
+  return getShellTerminalById(terminal.id) ?? terminal;
+}
+
 export function getRecentOutput(sessionId: string, lines = 200): string[] {
-  return getRecentOutputForChannel(sessionId, 'agent', lines);
-}
-
-export function getShellRecentOutput(sessionId: string, lines = 200): string[] {
-  return getRecentOutputForChannel(sessionId, 'shell', lines);
-}
-
-function getRecentOutputForChannel(sessionId: string, channel: PtyChannel, lines: number): string[] {
-  const live = registry(channel).get(sessionId);
-  if (live) {
-    return live.recentLines.slice(-lines);
-  }
+  const live = liveAgentSessions.get(sessionId);
+  if (live) return recentWithPending(live, lines);
 
   const session = getSessionById(sessionId);
   if (!session) return [];
+  return readRecentLog(session.scrollbackPath, lines);
+}
+
+export function getShellRecentOutput(sessionId: string, lines = 200): string[] {
+  const terminal = getDefaultShellTerminal(sessionId);
+  return terminal ? getShellTerminalRecentOutput(terminal.id, lines) : [];
+}
+
+export function getShellTerminalRecentOutput(terminalId: string, lines = 200): string[] {
+  const live = liveShellSessions.get(terminalId);
+  if (live) return recentWithPending(live, lines);
+
+  const terminal = getShellTerminalById(terminalId);
+  if (!terminal) return [];
+  return readRecentLog(terminal.scrollbackPath, lines);
+}
+
+function readRecentLog(logPath: string, lines: number): string[] {
   try {
-    const raw = fs.readFileSync(logPathFor(session, channel), 'utf-8');
+    const raw = fs.readFileSync(logPath, 'utf-8');
     return raw.split('\n').slice(-lines);
   } catch {
     return [];
   }
+}
+
+function recentWithPending(live: LivePty, lines: number): string[] {
+  const recent = live.recentLines.slice(-lines);
+  if (live.pendingLine) {
+    return [...recent, live.pendingLine].slice(-lines);
+  }
+  return recent;
 }
 
 export async function startSession(
@@ -234,7 +331,6 @@ export async function startSession(
   const sessionId = uuidv4();
   const dir = ensureSessionDir(sessionId);
   const scrollbackPath = path.join(dir, 'terminal.log');
-  const shellScrollbackPath = path.join(dir, 'shell.log');
   const eventsPath = path.join(dir, 'events.jsonl');
 
   const command = opts.command || project.defaultCodexCommand || 'codex';
@@ -254,6 +350,7 @@ export async function startSession(
   let agent: LivePty;
   try {
     agent = spawnLivePty({
+      id: sessionId,
       sessionId,
       channel: 'agent',
       command,
@@ -271,15 +368,25 @@ export async function startSession(
 
   const shell = shellCommand();
   try {
+    const terminalId = uuidv4();
+    const terminal = createShellTerminal({
+      id: terminalId,
+      sessionId,
+      title: 'Terminal 1',
+      status: 'starting',
+      scrollbackPath: path.join(dir, 'shell.log'),
+    });
     spawnLivePty({
+      id: terminal.id,
       sessionId,
       channel: 'shell',
       command: shell.command,
       args: shell.args,
       cwd: project.repoPath,
-      logPath: shellScrollbackPath,
+      logPath: terminal.scrollbackPath,
       eventsPath,
     });
+    updateShellTerminalStatus(terminal.id, 'running');
   } catch (err) {
     console.warn(`Failed to start shell PTY for session ${sessionId}:`, (err as Error).message);
   }
@@ -301,7 +408,14 @@ export function writeToSession(sessionId: string, text: string): boolean {
 }
 
 export function writeToShell(sessionId: string, text: string): boolean {
-  return writeToChannel(sessionId, 'shell', text);
+  const terminal = getDefaultShellTerminal(sessionId);
+  if (!terminal) return false;
+  ensureShellTerminal(terminal.id);
+  return writeToShellTerminal(terminal.id, text);
+}
+
+export function writeToShellTerminal(terminalId: string, text: string): boolean {
+  return writeToChannel(terminalId, 'shell', text);
 }
 
 function writeToChannel(sessionId: string, channel: PtyChannel, text: string): boolean {
@@ -316,7 +430,12 @@ export function interruptSession(sessionId: string): boolean {
 }
 
 export function interruptShell(sessionId: string): boolean {
-  return interruptChannel(sessionId, 'shell');
+  const terminal = getDefaultShellTerminal(sessionId);
+  return terminal ? interruptShellTerminal(terminal.id) : false;
+}
+
+export function interruptShellTerminal(terminalId: string): boolean {
+  return interruptChannel(terminalId, 'shell');
 }
 
 function interruptChannel(sessionId: string, channel: PtyChannel): boolean {
@@ -331,7 +450,12 @@ export function terminateSession(sessionId: string): boolean {
 }
 
 export function terminateShell(sessionId: string): boolean {
-  return terminateChannel(sessionId, 'shell');
+  const terminal = getDefaultShellTerminal(sessionId);
+  return terminal ? terminateShellTerminal(terminal.id) : false;
+}
+
+export function terminateShellTerminal(terminalId: string): boolean {
+  return terminateChannel(terminalId, 'shell');
 }
 
 function terminateChannel(sessionId: string, channel: PtyChannel): boolean {
@@ -359,7 +483,12 @@ export function killSessionTree(sessionId: string): Promise<boolean> {
 }
 
 export function killShellTree(sessionId: string): Promise<boolean> {
-  return killChannelTree(sessionId, 'shell');
+  const terminal = getDefaultShellTerminal(sessionId);
+  return terminal ? killShellTerminalTree(terminal.id) : Promise.resolve(false);
+}
+
+export function killShellTerminalTree(terminalId: string): Promise<boolean> {
+  return killChannelTree(terminalId, 'shell');
 }
 
 function killChannelTree(sessionId: string, channel: PtyChannel): Promise<boolean> {
@@ -384,7 +513,12 @@ export function resizePty(sessionId: string, cols: number, rows: number): void {
 }
 
 export function resizeShellPty(sessionId: string, cols: number, rows: number): void {
-  resizeChannelPty(sessionId, 'shell', cols, rows);
+  const terminal = getDefaultShellTerminal(sessionId);
+  if (terminal) resizeShellTerminalPty(terminal.id, cols, rows);
+}
+
+export function resizeShellTerminalPty(terminalId: string, cols: number, rows: number): void {
+  resizeChannelPty(terminalId, 'shell', cols, rows);
 }
 
 function resizeChannelPty(sessionId: string, channel: PtyChannel, cols: number, rows: number): void {

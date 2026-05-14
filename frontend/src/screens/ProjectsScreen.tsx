@@ -101,7 +101,7 @@ export function ProjectsScreen({
                   {latest.title && <><span className="meta-sep">·</span><span className="meta-muted truncate">{latest.title}</span></>}
                 </div>
               )}
-              {!latest && <div className="meta-muted">No sessions yet</div>}
+              {!latest && <div className="meta-muted">No remote runs yet</div>}
             </div>
           );
         })}

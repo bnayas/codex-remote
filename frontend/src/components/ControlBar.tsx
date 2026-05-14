@@ -6,11 +6,13 @@ export function ControlBar({
   sessionId,
   alive,
   target = 'agent',
+  terminalId,
   agentName = 'Agent',
 }: {
   sessionId: string;
   alive: boolean;
   target?: 'agent' | 'shell';
+  terminalId?: string;
   agentName?: string;
 }) {
   const [confirming, setConfirming] = useState<string | null>(null);
@@ -24,7 +26,11 @@ export function ControlBar({
     setConfirming(null);
     setActionStatus('');
     try {
-      if (target === 'shell') {
+      if (target === 'shell' && terminalId) {
+        if (action === 'interrupt') await api.interruptShellTerminal(sessionId, terminalId);
+        else if (action === 'terminate') await api.terminateShellTerminal(sessionId, terminalId);
+        else if (action === 'killtree') await api.killShellTerminalTree(sessionId, terminalId);
+      } else if (target === 'shell') {
         if (action === 'interrupt') await api.interruptShell(sessionId);
         else if (action === 'terminate') await api.terminateShell(sessionId);
         else if (action === 'killtree') await api.killShellTree(sessionId);

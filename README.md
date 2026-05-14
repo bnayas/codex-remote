@@ -166,6 +166,10 @@ markers through both channels, and verifies the streamed output.
 | POST | `/sessions/:id/kill-tree` | Kill process tree |
 | GET | `/sessions/:id/terminal?lines=N` | Scrollback |
 | WS | `/sessions/:id/stream` | Live output stream |
+| GET | `/sessions/:id/terminals` | List shell terminals |
+| POST | `/sessions/:id/terminals` | Create a shell terminal |
+| GET | `/sessions/:id/terminals/:terminalId/terminal?lines=N` | Shell terminal scrollback |
+| WS | `/sessions/:id/terminals/:terminalId/stream` | Shell terminal live stream |
 | GET | `/sessions/:id/files` | Git changed files |
 | GET | `/sessions/:id/diff` | Full repo diff |
 | GET | `/sessions/:id/files/:path/diff` | Per-file diff |

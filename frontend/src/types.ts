@@ -57,6 +57,19 @@ export interface Session {
   terminalAlive?: boolean;
 }
 
+export interface ShellTerminal {
+  id: string;
+  sessionId: string;
+  title: string;
+  status: 'starting' | 'running' | 'exited' | 'killed' | 'error' | 'unknown';
+  exitCode?: number;
+  startedAt: string;
+  endedAt?: string;
+  lastOutputAt?: string;
+  scrollbackPath: string;
+  alive?: boolean;
+}
+
 export interface Plan {
   id: string;
   sessionId: string;
@@ -125,7 +138,7 @@ export interface RepoFileContent {
 }
 
 export type WsMessage =
-  | { type: 'connected'; sessionId: string; status: string; alive: boolean; timestamp: string }
+  | { type: 'connected'; sessionId: string; terminalId?: string; status: string; alive: boolean; timestamp: string }
   | { type: 'scrollback'; lines: string[] }
   | { type: 'output'; data: string }
   | { type: 'agent_json_chunk'; content: string; timestamp: number }

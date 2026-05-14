@@ -6,14 +6,17 @@ import {
   getAllProjects, getProjectById, getAllSessions, getSessionsByProject,
   getSessionById, createPlan, updatePlan, getPlansBySession,
   getLatestFileSnapshot, createScheduledMessage, getScheduledMessagesBySession, updateScheduledMessageStatus,
-  Session
+  getShellTerminalById, Session, ShellTerminal
 } from '../db';
 import { AppConfig } from '../config';
 import {
   startSession, writeToSession, interruptSession,
   terminateSession, killSessionTree, getRecentOutput,
   isSessionAlive, getShellRecentOutput, isShellAlive,
-  writeToShell, interruptShell, terminateShell, killShellTree, ensureShellSession
+  writeToShell, interruptShell, terminateShell, killShellTree, ensureShellSession,
+  listShellTerminals, createShellTerminalForSession, ensureShellTerminal,
+  getShellTerminalRecentOutput, writeToShellTerminal, interruptShellTerminal,
+  terminateShellTerminal, killShellTerminalTree, isShellTerminalAlive
 } from '../ptyManager';
 import { getGitStatus, getDiff, getDiffStat, getLastCommits } from '../git';
 import { syncProjectsFromNotion } from '../notion';
@@ -192,6 +195,90 @@ export async function registerRoutes(app: FastifyInstance, config: AppConfig): P
     ensureShellSession(req.params.sessionId);
     const output = getShellRecentOutput(req.params.sessionId, lines);
     return { lines: output, total: output.length };
+  });
+
+  app.get('/sessions/:sessionId/terminals', async (
+    req: FastifyRequest<{ Params: { sessionId: string } }>,
+    reply: FastifyReply
+  ) => {
+    const session = getSessionById(req.params.sessionId);
+    if (!session) return reply.status(404).send({ error: 'Session not found' });
+    ensureShellSession(req.params.sessionId);
+    return listShellTerminals(req.params.sessionId).map(shellTerminalSummary);
+  });
+
+  app.post('/sessions/:sessionId/terminals', async (
+    req: FastifyRequest<{ Params: { sessionId: string }; Body?: { title?: string } }>,
+    reply: FastifyReply
+  ) => {
+    const session = getSessionById(req.params.sessionId);
+    if (!session) return reply.status(404).send({ error: 'Session not found' });
+    const terminal = createShellTerminalForSession(req.params.sessionId, req.body?.title);
+    if (!terminal) return reply.status(500).send({ error: 'Failed to create terminal' });
+    return reply.status(201).send(shellTerminalSummary(terminal));
+  });
+
+  app.get('/sessions/:sessionId/terminals/:terminalId/terminal', async (
+    req: FastifyRequest<{ Params: { sessionId: string; terminalId: string }; Querystring: { lines?: string } }>,
+    reply: FastifyReply
+  ) => {
+    const terminal = getShellTerminalForSession(req.params.sessionId, req.params.terminalId);
+    if (!terminal) return reply.status(404).send({ error: 'Terminal not found' });
+    ensureShellTerminal(terminal.id);
+    const lines = parseInt(req.query.lines ?? '200') || 200;
+    const output = getShellTerminalRecentOutput(terminal.id, lines);
+    return { lines: output, total: output.length };
+  });
+
+  app.post('/sessions/:sessionId/terminals/:terminalId/input', async (
+    req: FastifyRequest<{ Params: { sessionId: string; terminalId: string }; Body: { text: string } }>,
+    reply: FastifyReply
+  ) => {
+    const terminal = getShellTerminalForSession(req.params.sessionId, req.params.terminalId);
+    if (!terminal) return reply.status(404).send({ error: 'Terminal not found' });
+    ensureShellTerminal(terminal.id);
+    const ok = writeToShellTerminal(terminal.id, req.body.text);
+    if (!ok) return reply.status(404).send({ error: 'Terminal session not active' });
+    return { ok: true };
+  });
+
+  app.post('/sessions/:sessionId/terminals/:terminalId/interrupt', async (
+    req: FastifyRequest<{ Params: { sessionId: string; terminalId: string } }>,
+    reply: FastifyReply
+  ) => {
+    const terminal = getShellTerminalForSession(req.params.sessionId, req.params.terminalId);
+    if (!terminal) return reply.status(404).send({ error: 'Terminal not found' });
+    const ok = interruptShellTerminal(terminal.id);
+    if (!ok) return reply.status(404).send({ error: 'Terminal session not active' });
+    return { ok: true };
+  });
+
+  app.post('/sessions/:sessionId/terminals/:terminalId/terminate', async (
+    req: FastifyRequest<{ Params: { sessionId: string; terminalId: string }; Body?: { confirm?: boolean } }>,
+    reply: FastifyReply
+  ) => {
+    if (req.body?.confirm !== true) {
+      return reply.status(400).send({ error: 'Confirmation required', message: 'Stop Terminal requires confirm: true' });
+    }
+    const terminal = getShellTerminalForSession(req.params.sessionId, req.params.terminalId);
+    if (!terminal) return reply.status(404).send({ error: 'Terminal not found' });
+    const ok = terminateShellTerminal(terminal.id);
+    if (!ok) return reply.status(404).send({ error: 'Terminal session not active' });
+    return { ok: true };
+  });
+
+  app.post('/sessions/:sessionId/terminals/:terminalId/kill-tree', async (
+    req: FastifyRequest<{ Params: { sessionId: string; terminalId: string }; Body?: { confirm?: boolean } }>,
+    reply: FastifyReply
+  ) => {
+    if (req.body?.confirm !== true) {
+      return reply.status(400).send({ error: 'Confirmation required', message: 'Kill Terminal requires confirm: true' });
+    }
+    const terminal = getShellTerminalForSession(req.params.sessionId, req.params.terminalId);
+    if (!terminal) return reply.status(404).send({ error: 'Terminal not found' });
+    const ok = await killShellTerminalTree(terminal.id);
+    if (!ok) return reply.status(404).send({ error: 'Terminal session not active or kill failed' });
+    return { ok: true };
   });
 
   app.post('/sessions/:sessionId/shell/input', async (
@@ -436,6 +523,19 @@ function sessionSummary(s: Session) {
     alive: isSessionAlive(s.id),
     terminalAlive: isShellAlive(s.id),
   };
+}
+
+function shellTerminalSummary(t: ShellTerminal) {
+  return {
+    ...t,
+    alive: isShellTerminalAlive(t.id),
+  };
+}
+
+function getShellTerminalForSession(sessionId: string, terminalId: string): ShellTerminal | undefined {
+  const terminal = getShellTerminalById(terminalId);
+  if (!terminal || terminal.sessionId !== sessionId) return undefined;
+  return terminal;
 }
 
 async function projectContext(project: ReturnType<typeof getAllProjects>[number]) {
