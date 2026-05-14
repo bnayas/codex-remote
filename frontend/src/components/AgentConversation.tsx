@@ -13,10 +13,12 @@ import stripAnsi from 'strip-ansi';
 
 // Matches OSC (Operating System Commands) like window title changes: \x1b]0;title\x07 or \x1b]0;title\x1b\\
 const OSC_RE = /(?:[\u001b\u009b]\][0-9]+;.*?(?:\x07|\x1b\\))|(?:\][0-9]+;.*?\\)/g;
+const USER_PROMPT_MARKER = '__CODEX_REMOTE_USER_PROMPT__';
 
 function cleanAgentOutput(s: string): string {
   // First strip OSC, then ANSI, then remove leftovers that look like broken ANSI
   let clean = stripAnsi(s.replace(OSC_RE, ''))
+    .replace(/^\s*›\s*/, `${USER_PROMPT_MARKER} `)
     .replace(/[╭╰│├┼┤]/g, '') // Strip box-drawing characters
     .replace(/─/g, '') // Strip horizontal lines
     .replace(/>_ OpenAI Codex \(v[0-9.]+\)/g, '') // Strip codex header
@@ -30,6 +32,7 @@ function cleanAgentOutput(s: string): string {
     .replace(/›/g, '')
     .replace(/gpt-5\.5.*/g, '')
     .replace(/[q╮╯]/g, '')
+    .replace(/\s*Called [\w-]+(?:\.[\w-]+)?\(.+$/g, '')
     .trim();
   
   return clean;
@@ -42,16 +45,156 @@ interface Message {
   timestamp: number;
 }
 
+function compactBlankLines(text: string): string {
+  return text
+    .replace(/[ \t]+\n/g, '\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
+
+function isAgentLine(line: string): boolean {
+  return /^([•●]\s|I('|’)?ll\s|I('|’)?m\s|The\s|Current state:|Checks passed:|Branch:|Implemented:|Verified:|Chrome test is open)/.test(line);
+}
+
+function isUserPromptLine(line: string): boolean {
+  return line.startsWith(USER_PROMPT_MARKER);
+}
+
+function withoutUserPromptMarker(line: string): string {
+  return isUserPromptLine(line) ? line.slice(USER_PROMPT_MARKER.length).trimStart() : line;
+}
+
+function isSystemLine(line: string): boolean {
+  return line.includes('Conversation interrupted') || line.includes('/feedback');
+}
+
+function isToolTraceLine(line: string): boolean {
+  return line === 'System'
+    || /^([└]\s?|[•●]\s*Called |Called |tool result|\<image content\>|Computer Use state|App=|Window:|The focused UI element is|<app_state>|<\/app_state>)/i.test(line)
+    || /^\d+\s+(standard window|container|toolbar|button|text|image|tab|menu|HTML content|close button|full screen|minimise|row|cell|column|link|pop-up button|text field)/.test(line)
+    || line.includes('/skills')
+    || line === 'issue.';
+}
+
+function formatSystemLine(line: string): string {
+  if (line.includes('Conversation interrupted') || line.includes('/feedback')) {
+    return 'Conversation interrupted.';
+  }
+  return line;
+}
+
+function looksLikeUserLine(
+  line: string,
+  nextMeaningful?: string,
+  previousRole?: Message['role'],
+  previousLine?: string
+): boolean {
+  if (isUserPromptLine(line)) return true;
+  if (!line || isAgentLine(line) || isSystemLine(line)) return false;
+  if (/^(frontend|backend|android)\s+npm\s+run\s+/.test(line)) return false;
+  if (/^(Commit:|Output:|Token:|Test backend:|Current state:)/.test(line)) return false;
+  if (previousRole === 'agent' && previousLine && !/[.!?:)\]`'"]$/.test(previousLine)) {
+    return false;
+  }
+  if (nextMeaningful && (isAgentLine(nextMeaningful) || isSystemLine(nextMeaningful))) return true;
+  return /^[A-Z0-9"'-]/.test(line) && line.length <= 180 && /[?.!]$/.test(line);
+}
+
+function appendParsedMessage(messages: Message[], role: Message['role'], line: string, timestamp: number): void {
+  const content = role === 'agent'
+    ? line.replace(/^[•●]\s*/, '')
+    : role === 'system'
+    ? formatSystemLine(line)
+    : withoutUserPromptMarker(line);
+  const last = messages[messages.length - 1];
+  if (last?.role === role && last.content === content) return;
+  if (last?.role === role) {
+    last.content = compactBlankLines(`${last.content}\n${content}`);
+    return;
+  }
+  messages.push({
+    id: `${role}-${timestamp}-${messages.length}`,
+    role,
+    content,
+    timestamp,
+  });
+}
+
+function parseScrollback(lines: string[]): Message[] {
+  const visibleLines = lines
+    .map(line => cleanAgentOutput(line))
+    .map(line => line.trim())
+    .filter(Boolean)
+    .filter(line => !isToolTraceLine(line));
+
+  const messages: Message[] = [];
+  const timestamp = Date.now();
+
+  let previousRole: Message['role'] | undefined;
+  let previousLine = '';
+
+  visibleLines.forEach((line, index) => {
+    const nextMeaningful = visibleLines.slice(index + 1).find(Boolean);
+    const isContinuation = Boolean(
+      previousRole
+      && previousRole !== 'system'
+      && !isUserPromptLine(line)
+      && previousLine
+      && !/[.!?:)\]`'"]$/.test(previousLine)
+    );
+    const role: Message['role'] = isSystemLine(line)
+      ? 'system'
+      : isAgentLine(line)
+      ? 'agent'
+      : isContinuation
+      ? previousRole!
+      : looksLikeUserLine(line, nextMeaningful, previousRole, previousLine)
+      ? 'user'
+      : 'agent';
+
+    appendParsedMessage(messages, role, line, timestamp);
+    previousRole = role;
+    previousLine = line;
+  });
+
+  return messages.length > 0 ? messages : [{
+    id: 'history-empty',
+    role: 'system',
+    content: 'No conversation history yet.',
+    timestamp,
+  }];
+}
+
+function conversationStatusLabel(
+  connected: boolean,
+  alive: boolean,
+  status: string,
+  error?: string
+): { label: string; tone: 'alive' | 'dead' | 'warn' } {
+  if (connected && alive) return { label: '● Live', tone: 'alive' };
+  if (error) return { label: `↻ ${error}`, tone: 'warn' };
+  if (connected && !alive) return { label: `○ History only · ${status}`, tone: 'dead' };
+  return { label: `○ Offline · ${status}`, tone: 'dead' };
+}
+
 export function AgentConversation({
   sessionId,
   agentName,
+  sessionStatus,
+  onState,
+  onRefresh,
 }: {
   sessionId: string;
   agentName: string;
+  sessionStatus?: string;
+  onState?: (state: { connected: boolean; alive: boolean; status: string }) => void;
+  onRefresh?: () => Promise<void> | void;
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [messages, setMessages] = useState<Message[]>([]);
   const [alive, setAlive] = useState(false);
+  const [status, setStatus] = useState(sessionStatus ?? 'unknown');
+  const [refreshing, setRefreshing] = useState(false);
   const [autoScroll, setAutoScroll] = useState(true);
 
   const handleJsonEvent = useCallback((msg: any) => {
@@ -82,15 +225,7 @@ export function AgentConversation({
   }, []);
 
   const handleScrollback = useCallback((lines: string[]) => {
-    // When connecting, we get the whole scrollback history.
-    // Parse it as a single block for now.
-    const text = lines.join('\n');
-    setMessages([{
-      id: 'history',
-      role: 'agent',
-      content: text,
-      timestamp: Date.now()
-    }]);
+    setMessages(parseScrollback(lines));
   }, []);
 
   const stream = useSessionStream({
@@ -104,8 +239,14 @@ export function AgentConversation({
   useEffect(() => {
     if (stream.connected) {
       setAlive(stream.alive);
+      setStatus(stream.status);
+      onState?.({ connected: stream.connected, alive: stream.alive, status: stream.status });
     }
-  }, [stream.connected, stream.alive]);
+  }, [stream.connected, stream.alive, stream.status, onState]);
+
+  useEffect(() => {
+    setStatus(sessionStatus ?? 'unknown');
+  }, [sessionStatus]);
 
   useEffect(() => {
     if (autoScroll && containerRef.current) {
@@ -120,11 +261,34 @@ export function AgentConversation({
     setAutoScroll(atBottom);
   }
 
+  async function refreshConversationStatus() {
+    if (!onRefresh || refreshing) return;
+    setRefreshing(true);
+    try {
+      await onRefresh();
+    } finally {
+      setRefreshing(false);
+    }
+  }
+
+  const statusInfo = conversationStatusLabel(stream.connected, alive, status, stream.error);
+
   return (
     <div className="conversation-outer">
       <div className="conversation-header">
         <span className="conversation-label">{agentName} conversation</span>
-        <span className={`conversation-status ${alive ? 'alive' : 'dead'}`}>{alive ? '● live' : '○ offline'}</span>
+        <div className="conversation-status-wrap">
+          <span className={`conversation-status ${statusInfo.tone}`}>{statusInfo.label}</span>
+          {(!alive || stream.error) && onRefresh && (
+            <button
+              className="conversation-refresh"
+              onClick={refreshConversationStatus}
+              disabled={refreshing}
+            >
+              {refreshing ? 'Refreshing...' : 'Refresh'}
+            </button>
+          )}
+        </div>
       </div>
       
       {stream.error && (
@@ -136,14 +300,18 @@ export function AgentConversation({
       <div className="conversation-messages" ref={containerRef} onScroll={handleScroll}>
         {messages.map(msg => {
           const isUser = msg.role === 'user';
+          const isSystem = msg.role === 'system';
           return (
-            <div key={msg.id} className={`conversation-row ${isUser ? 'user' : 'agent'}`}>
-              {!isUser && (
+            <div key={msg.id} className={`conversation-row ${msg.role}`}>
+              {msg.role === 'agent' && (
                 <img src="/agent_avatar.png" alt="Agent" className="conversation-avatar" />
               )}
               
-              <div className={`conversation-bubble ${isUser ? 'user' : 'agent'}`}>
-                {isUser ? (
+              <div className={`conversation-bubble ${msg.role}`}>
+                <div className="conversation-role-label">
+                  {isUser ? 'You' : isSystem ? 'Status' : agentName}
+                </div>
+                {isUser || isSystem ? (
                   msg.content.trim()
                 ) : (
                   <ReactMarkdown
@@ -212,6 +380,7 @@ export function AgentConversation({
           disabled={!alive} 
           target="agent" 
           placeholder={`Message ${agentName}…`} 
+          disabledPlaceholder="History only - refresh to check the remote"
           // Intercept input to add user messages optimistically
           onSendOptimistic={(text) => {
             setMessages(prev => [...prev, {
