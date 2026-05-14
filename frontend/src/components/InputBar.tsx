@@ -8,6 +8,7 @@ export function InputBar({
   target = 'agent',
   terminalId,
   placeholder,
+  disabledPlaceholder,
   allowSchedule = true,
   onSendOptimistic,
 }: {
@@ -16,6 +17,7 @@ export function InputBar({
   target?: 'agent' | 'shell';
   terminalId?: string;
   placeholder?: string;
+  disabledPlaceholder?: string;
   allowSchedule?: boolean;
   onSendOptimistic?: (text: string) => void;
 }) {
@@ -107,7 +109,7 @@ export function InputBar({
         value={text}
         onChange={e => setText(e.target.value)}
         onKeyDown={onKeyDown}
-        placeholder={disabled ? 'Session not active' : (placeholder || 'Type your message...')}
+        placeholder={disabled ? (disabledPlaceholder || 'Session not active') : (placeholder || 'Type your message...')}
         disabled={disabled}
         rows={1}
         style={{

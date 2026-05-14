@@ -31,6 +31,7 @@ export function SessionScreen({
   const [terminals, setTerminals] = useState<ShellTerminal[]>([]);
   const [activeTerminalId, setActiveTerminalId] = useState('');
   const [creatingTerminal, setCreatingTerminal] = useState(false);
+  const [refreshingSession, setRefreshingSession] = useState(false);
 
   const fetchScheduled = useCallback(() => {
     api.getScheduledMessages(session.id).then(setScheduled).catch(err => {
@@ -68,20 +69,28 @@ export function SessionScreen({
     )));
   }, [activeTerminalId]);
 
+  const refreshSession = useCallback(async () => {
+    setRefreshingSession(true);
+    try {
+      const updated = await api.getSession(session.id);
+      setSession(updated);
+      setAlive(updated.alive ?? false);
+      setTerminalAlive(updated.terminalAlive ?? false);
+      fetchTerminals();
+      fetchScheduled();
+    } catch (err) {
+      console.error('Failed to refresh session:', err);
+    } finally {
+      setRefreshingSession(false);
+    }
+  }, [session.id, fetchScheduled, fetchTerminals]);
+
   // Refresh session on mount
   useEffect(() => {
-    api.getSession(session.id).then(s => {
-      setSession(s);
-      setAlive(s.alive ?? false);
-      setTerminalAlive(s.terminalAlive ?? false);
-    }).catch(err => {
-      console.error('Failed to refresh session:', err);
-    });
-    fetchTerminals();
-    fetchScheduled();
+    void refreshSession();
     const interval = setInterval(fetchScheduled, 10000);
     return () => clearInterval(interval);
-  }, [session.id, fetchScheduled, fetchTerminals]);
+  }, [session.id, fetchScheduled, refreshSession]);
 
   const noOutputSince = session.lastOutputAt
     ? Math.floor((Date.now() - new Date(session.lastOutputAt).getTime()) / 1000)
@@ -100,6 +109,13 @@ export function SessionScreen({
 
   const activeTerminal = terminals.find(t => t.id === activeTerminalId) ?? terminals[0];
   const activeTerminalAlive = activeTerminal?.alive ?? terminalAlive;
+  const headerStatus = refreshingSession
+    ? { label: 'Refreshing', color: '#7cb7ff', background: 'rgba(124,183,255,0.12)' }
+    : alive
+    ? { label: 'Live', color: '#4ade80', background: 'rgba(74,222,128,0.12)' }
+    : agentConnected
+    ? { label: `History · ${session.status}`, color: '#8b8b9e', background: 'rgba(139,139,158,0.12)' }
+    : { label: 'Offline', color: '#fbbf24', background: 'rgba(251,191,36,0.12)' };
 
   async function createTerminal() {
     if (creatingTerminal) return;
@@ -136,17 +152,17 @@ export function SessionScreen({
           display: 'flex',
           alignItems: 'center',
           gap: '8px',
-          background: 'rgba(30, 30, 40, 0.6)',
+          background: headerStatus.background,
           backdropFilter: 'blur(10px)',
           padding: '6px 12px',
           borderRadius: '20px',
           border: '1px solid rgba(255,255,255,0.05)',
-          color: '#4ade80',
+          color: headerStatus.color,
           fontSize: '14px',
           fontWeight: 500
         }}>
-          <div style={{ width: 8, height: 8, borderRadius: '50%', background: '#4ade80', boxShadow: '0 0 10px #4ade80' }} />
-          Live
+          <div style={{ width: 8, height: 8, borderRadius: '50%', background: headerStatus.color, boxShadow: `0 0 10px ${headerStatus.color}` }} />
+          {headerStatus.label}
         </div>
 
         {/* Center: Title */}
@@ -195,7 +211,13 @@ export function SessionScreen({
         {/* Conversation GUI tab */}
         <div className={`tab-pane ${tab !== 'conversation' ? 'tab-pane-hidden' : ''}`}>
           <ErrorBoundary fallbackMessage="Conversation rendering error">
-            <AgentConversation sessionId={session.id} agentName={agentName} />
+            <AgentConversation
+              sessionId={session.id}
+              agentName={agentName}
+              sessionStatus={session.status}
+              onState={handleAgentState}
+              onRefresh={refreshSession}
+            />
           </ErrorBoundary>
         </div>
 
