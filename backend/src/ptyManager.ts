@@ -229,7 +229,7 @@ function getRecentOutputForChannel(sessionId: string, channel: PtyChannel, lines
 
 export async function startSession(
   project: ProjectConfig,
-  opts: { title?: string; initialPrompt?: string } = {}
+  opts: { title?: string; initialPrompt?: string; command?: string; args?: string[] } = {}
 ): Promise<string> {
   const sessionId = uuidv4();
   const dir = ensureSessionDir(sessionId);
@@ -237,8 +237,8 @@ export async function startSession(
   const shellScrollbackPath = path.join(dir, 'shell.log');
   const eventsPath = path.join(dir, 'events.jsonl');
 
-  const command = project.defaultCodexCommand || 'codex';
-  const args: string[] = [];
+  const command = opts.command || project.defaultCodexCommand || 'codex';
+  const args = opts.args ?? [];
 
   createSession({
     id: sessionId,

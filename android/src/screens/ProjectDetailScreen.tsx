@@ -13,7 +13,7 @@ import {
 } from 'react-native';
 import { useFocusEffect } from '@react-navigation/native';
 import { NativeStackScreenProps } from '@react-navigation/native-stack';
-import { RootStackParamList, RepoContext, Session } from '../types';
+import { CodexConversation, RootStackParamList, RepoContext, Session } from '../types';
 import { Colors, Fonts, Radius, statusColor } from '../theme';
 import { api } from '../api';
 import { timeSince } from '../utils';
@@ -31,12 +31,24 @@ export default function ProjectDetailScreen({ route, navigation }: Props) {
   const [startError, setStartError] = useState('');
   const [context, setContext] = useState<RepoContext | null>(null);
   const [contextError, setContextError] = useState('');
+  const [codexConversations, setCodexConversations] = useState<CodexConversation[]>([]);
+  const [historyLoading, setHistoryLoading] = useState(true);
+  const [historyError, setHistoryError] = useState('');
+  const [resumingId, setResumingId] = useState('');
 
   useFocusEffect(
     useCallback(() => {
       api.getProject(project.id)
         .then(p => setSessions(p.sessions ?? []))
         .catch(() => {});
+      setHistoryLoading(true);
+      api.getCodexConversations(project.id)
+        .then(items => {
+          setCodexConversations(items);
+          setHistoryError('');
+        })
+        .catch(e => setHistoryError((e as Error).message))
+        .finally(() => setHistoryLoading(false));
       api.getRepoContext(project.id)
         .then(c => {
           setContext(c);
@@ -65,6 +77,46 @@ export default function ProjectDetailScreen({ route, navigation }: Props) {
     } finally {
       setStarting(false);
     }
+  }
+
+  async function handleResume(conversation: CodexConversation) {
+    setHistoryError('');
+    setResumingId(conversation.id);
+    try {
+      const session = await api.resumeCodexConversation(project.id, conversation.id);
+      setSessions(ss => [session, ...ss]);
+      navigation.push('Session', { session });
+    } catch (e: unknown) {
+      setHistoryError((e as Error).message);
+    } finally {
+      setResumingId('');
+    }
+  }
+
+  function renderCodexConversation(item: CodexConversation) {
+    return (
+      <View key={item.id} style={styles.sessionCard}>
+        <View style={styles.sessionHeader}>
+          <View style={[styles.codexDot]} />
+          <Text style={styles.sessionTitle} numberOfLines={1}>
+            {item.threadName}
+          </Text>
+          <TouchableOpacity
+            style={styles.resumeButton}
+            onPress={() => handleResume(item)}
+            disabled={resumingId === item.id}
+            activeOpacity={0.75}>
+            <Text style={styles.resumeButtonText}>
+              {resumingId === item.id ? 'Resuming...' : 'Resume'}
+            </Text>
+          </TouchableOpacity>
+        </View>
+        <Text style={styles.sessionMeta}>
+          Updated {timeSince(item.updatedAt)}  ·  {item.id.slice(0, 8)}
+          {item.source ? `  ·  ${item.source}` : ''}
+        </Text>
+      </View>
+    );
   }
 
   function renderSession({ item }: ListRenderItemInfo<Session>) {
@@ -154,12 +206,19 @@ export default function ProjectDetailScreen({ route, navigation }: Props) {
             ) : (
               contextError === '' && <Text style={styles.contextMuted}>Loading context...</Text>
             )}
-            <Text style={styles.sectionTitle}>SESSION HISTORY</Text>
+            <Text style={styles.sectionTitle}>CODEX SESSION HISTORY</Text>
+            {historyError !== '' && <Text style={styles.contextError}>{historyError}</Text>}
+            {historyLoading && <Text style={styles.contextMuted}>Loading Codex conversations...</Text>}
+            {!historyLoading && codexConversations.map(renderCodexConversation)}
+            {!historyLoading && codexConversations.length === 0 && (
+              <Text style={styles.contextMuted}>No resumable Codex conversations found for this repo.</Text>
+            )}
+            <Text style={styles.sectionTitle}>REMOTE RUNS</Text>
           </View>
         }
         ListEmptyComponent={
           <View style={styles.empty}>
-            <Text style={styles.emptyText}>No sessions yet.{'\n'}Tap "+ Session" to start Codex.</Text>
+            <Text style={styles.emptyText}>No remote runs yet.{'\n'}Tap "+ Session" to start Codex.</Text>
           </View>
         }
       />
@@ -270,6 +329,23 @@ const styles = StyleSheet.create({
     fontFamily: Fonts.sans,
     fontSize: 12,
     color: Colors.textDim,
+  },
+  codexDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    backgroundColor: '#3b82f6',
+  },
+  resumeButton: {
+    borderRadius: Radius.sm,
+    backgroundColor: '#3b82f6',
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+  },
+  resumeButtonText: {
+    fontFamily: Fonts.sansMedium,
+    fontSize: 12,
+    color: '#fff',
   },
   contextSection: {
     borderBottomWidth: 1,

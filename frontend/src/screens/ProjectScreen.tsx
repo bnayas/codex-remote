@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Project, Session, RepoContext } from '../types';
+import { CodexConversation, Project, Session, RepoContext } from '../types';
 import { api } from '../api';
 import { statusColor, timeSince, agentDisplayName } from '../utils';
 
@@ -75,14 +75,25 @@ export function ProjectScreen({
   onOpenSession: (s: Session) => void;
 }) {
   const [sessions, setSessions] = useState<Session[]>(project.sessions || []);
+  const [codexConversations, setCodexConversations] = useState<CodexConversation[]>([]);
   const [showNew, setShowNew] = useState(false);
   const [context, setContext] = useState<RepoContext | null>(null);
   const [contextError, setContextError] = useState('');
+  const [historyError, setHistoryError] = useState('');
+  const [historyLoading, setHistoryLoading] = useState(true);
+  const [resumingId, setResumingId] = useState('');
 
   useEffect(() => {
     api.getProject(project.id).then(p => setSessions(p.sessions || [])).catch(err => {
       console.error('Failed to load project:', err);
     });
+    api.getCodexConversations(project.id)
+      .then(items => {
+        setCodexConversations(items);
+        setHistoryError('');
+      })
+      .catch(e => setHistoryError((e as Error).message))
+      .finally(() => setHistoryLoading(false));
     api.getRepoContext(project.id)
       .then(c => {
         setContext(c);
@@ -95,6 +106,20 @@ export function ProjectScreen({
     setShowNew(false);
     setSessions(ss => [session, ...ss]);
     onOpenSession(session);
+  }
+
+  async function handleResumeConversation(conversation: CodexConversation) {
+    setResumingId(conversation.id);
+    setHistoryError('');
+    try {
+      const session = await api.resumeCodexConversation(project.id, conversation.id);
+      setSessions(ss => [session, ...ss]);
+      onOpenSession(session);
+    } catch (e: unknown) {
+      setHistoryError((e as Error).message);
+    } finally {
+      setResumingId('');
+    }
   }
 
   return (
@@ -138,8 +163,34 @@ export function ProjectScreen({
         )}
       </div>
 
-      <div className="section-title" style={{ marginTop: 16 }}>Session History</div>
+      <div className="section-title" style={{ marginTop: 16 }}>Codex Session History</div>
       <div className="list">
+        {historyError && <div className="error-banner compact">{historyError}</div>}
+        {historyLoading && <div className="empty-state">Loading Codex conversations...</div>}
+        {!historyLoading && codexConversations.map(c => (
+          <div key={c.id} className="session-card">
+            <div className="session-card-header">
+              <span className="status-dot" style={{ background: 'var(--accent-blue)' }} />
+              <span className="session-card-title">{c.threadName}</span>
+              <button
+                className="btn-primary btn-sm"
+                disabled={resumingId === c.id}
+                onClick={() => void handleResumeConversation(c)}
+              >
+                {resumingId === c.id ? 'Resuming...' : 'Resume'}
+              </button>
+            </div>
+            <div className="session-card-meta">
+              Updated {timeSince(c.updatedAt)} · {c.id.slice(0, 8)}
+              {c.source && <span> · {c.source}</span>}
+            </div>
+          </div>
+        ))}
+        {!historyLoading && codexConversations.length === 0 && (
+          <div className="empty-state">No resumable Codex conversations found for this repo.</div>
+        )}
+
+        <div className="section-title" style={{ marginTop: 16 }}>Remote Runs</div>
         {sessions.map(s => (
           <div key={s.id} className="session-card" onClick={() => onOpenSession(s)}>
             <div className="session-card-header">
@@ -155,7 +206,7 @@ export function ProjectScreen({
             </div>
           </div>
         ))}
-        {sessions.length === 0 && <div className="empty-state">No sessions yet</div>}
+        {sessions.length === 0 && <div className="empty-state">No remote runs yet</div>}
       </div>
 
       {showNew && (

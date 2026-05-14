@@ -20,6 +20,10 @@ Phone PWA  →  Tailscale  →  Local backend  →  node-pty  →  Codex CLI  �
 - **Auth token** — Bearer token required on all endpoints
 - **Mobile PWA** — installable, offline-capable shell, iOS/Android home screen
 
+## Backlog
+
+- Preserve full conversation response history in the app. Older user responses should stay visible and searchable when resuming a Codex conversation instead of being lost inside raw response history.
+
 ## Architecture
 
 ```
@@ -150,6 +154,8 @@ markers through both channels, and verifies the streamed output.
 | GET | `/projects` | List all projects |
 | GET | `/projects/:id` | Project + sessions |
 | GET | `/projects/:id/context` | Selected repo context, git status, and recent commits |
+| GET | `/projects/:id/codex-conversations` | Resumable Codex conversations for this repo |
+| POST | `/projects/:id/codex-conversations/:conversationId/resume` | Start a remote session with `codex resume <conversationId>` |
 | POST | `/projects/sync-notion` | Sync projects from Notion |
 | GET | `/sessions` | All sessions |
 | GET | `/sessions/:id` | Session detail |

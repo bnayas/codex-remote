@@ -30,6 +30,17 @@ export interface RepoContext {
   lastCommits: GitCommit[];
 }
 
+export interface CodexConversation {
+  id: string;
+  threadName: string;
+  cwd: string;
+  createdAt: string;
+  updatedAt: string;
+  source?: string;
+  cliVersion?: string;
+  path: string;
+}
+
 export interface Session {
   id: string;
   projectId: string;

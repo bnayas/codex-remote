@@ -17,6 +17,7 @@ import {
 } from '../ptyManager';
 import { getGitStatus, getDiff, getDiffStat, getLastCommits } from '../git';
 import { syncProjectsFromNotion } from '../notion';
+import { listCodexConversationsForRepo } from '../codexHistory';
 
 export async function registerRoutes(app: FastifyInstance, config: AppConfig): Promise<void> {
 
@@ -43,6 +44,42 @@ export async function registerRoutes(app: FastifyInstance, config: AppConfig): P
     const p = getProjectById(req.params.projectId);
     if (!p) return reply.status(404).send({ error: 'Project not found' });
     return projectContext(p);
+  });
+
+  app.get('/projects/:projectId/codex-conversations', async (
+    req: FastifyRequest<{ Params: { projectId: string }; Querystring: { limit?: string } }>,
+    reply: FastifyReply
+  ) => {
+    const p = getProjectById(req.params.projectId);
+    if (!p) return reply.status(404).send({ error: 'Project not found' });
+
+    const limit = Math.max(1, Math.min(parseInt(req.query.limit ?? '50') || 50, 100));
+    return listCodexConversationsForRepo(p.repoPath, limit);
+  });
+
+  app.post('/projects/:projectId/codex-conversations/:conversationId/resume', async (
+    req: FastifyRequest<{ Params: { projectId: string; conversationId: string } }>,
+    reply: FastifyReply
+  ) => {
+    const project = getProjectById(req.params.projectId);
+    if (!project) return reply.status(404).send({ error: 'Project not found' });
+
+    const conversations = await listCodexConversationsForRepo(project.repoPath, 1000);
+    const conversation = conversations.find(c => c.id === req.params.conversationId);
+    if (!conversation) return reply.status(404).send({ error: 'Codex conversation not found for this project' });
+
+    try {
+      const sessionId = await startSession(project, {
+        title: conversation.threadName,
+        command: 'codex',
+        args: ['resume', conversation.id],
+      });
+      const session = getSessionById(sessionId);
+      return reply.status(201).send(session ? sessionSummary(session) : undefined);
+    } catch (err: unknown) {
+      const e = err as Error;
+      return reply.status(500).send({ error: 'Failed to resume Codex conversation', message: e.message });
+    }
   });
 
   app.get('/projects/:projectId', async (req: FastifyRequest<{ Params: { projectId: string } }>, reply: FastifyReply) => {
