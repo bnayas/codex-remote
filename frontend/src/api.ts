@@ -1,6 +1,6 @@
 import {
   Project, Session, Plan, GitStatus, DiffResult, ScheduledMessage,
-  RepoContext, RepoTree, RepoFileContent, CodexConversation,
+  RepoContext, RepoTree, RepoFileContent, CodexConversation, ShellTerminal,
 } from './types';
 
 let authToken = localStorage.getItem('codex_auth_token') || '';
@@ -80,11 +80,25 @@ export const api = {
     req<{ ok: boolean }>('POST', `/sessions/${sessionId}/kill-tree`, { confirm: true }),
   killShellTree: (sessionId: string) =>
     req<{ ok: boolean }>('POST', `/sessions/${sessionId}/shell/kill-tree`, { confirm: true }),
+  getShellTerminals: (sessionId: string) =>
+    req<ShellTerminal[]>('GET', `/sessions/${sessionId}/terminals`),
+  createShellTerminal: (sessionId: string, body?: { title?: string }) =>
+    req<ShellTerminal>('POST', `/sessions/${sessionId}/terminals`, body ?? {}),
+  sendShellTerminalInput: (sessionId: string, terminalId: string, text: string) =>
+    req<{ ok: boolean }>('POST', `/sessions/${sessionId}/terminals/${terminalId}/input`, { text }),
+  interruptShellTerminal: (sessionId: string, terminalId: string) =>
+    req<{ ok: boolean }>('POST', `/sessions/${sessionId}/terminals/${terminalId}/interrupt`, { confirm: true }),
+  terminateShellTerminal: (sessionId: string, terminalId: string) =>
+    req<{ ok: boolean }>('POST', `/sessions/${sessionId}/terminals/${terminalId}/terminate`, { confirm: true }),
+  killShellTerminalTree: (sessionId: string, terminalId: string) =>
+    req<{ ok: boolean }>('POST', `/sessions/${sessionId}/terminals/${terminalId}/kill-tree`, { confirm: true }),
 
   getTerminal: (sessionId: string, lines = 200) =>
     req<{ lines: string[]; total: number }>('GET', `/sessions/${sessionId}/terminal?lines=${lines}`),
   getShellTerminal: (sessionId: string, lines = 200) =>
     req<{ lines: string[]; total: number }>('GET', `/sessions/${sessionId}/shell/terminal?lines=${lines}`),
+  getShellTerminalOutput: (sessionId: string, terminalId: string, lines = 200) =>
+    req<{ lines: string[]; total: number }>('GET', `/sessions/${sessionId}/terminals/${terminalId}/terminal?lines=${lines}`),
 
   getFiles: (sessionId: string) =>
     req<GitStatus>('GET', `/sessions/${sessionId}/files`),
@@ -114,9 +128,11 @@ export const api = {
     req<{ ok: boolean }>('DELETE', `/sessions/${sessionId}/scheduled/${id}`),
 };
 
-export function buildWsUrl(sessionId: string, channel: 'agent' | 'shell' = 'agent'): string {
+export function buildWsUrl(sessionId: string, channel: 'agent' | 'shell' = 'agent', terminalId?: string): string {
   const wsBase = baseUrl.replace(/^http/, 'ws');
-  const path = channel === 'shell'
+  const path = channel === 'shell' && terminalId
+    ? `/sessions/${sessionId}/terminals/${terminalId}/stream`
+    : channel === 'shell'
     ? `/sessions/${sessionId}/shell/stream`
     : `/sessions/${sessionId}/stream`;
   return `${wsBase}${path}?token=${encodeURIComponent(authToken)}`;

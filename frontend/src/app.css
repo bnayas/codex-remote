@@ -63,6 +63,11 @@ html, body {
   /* session has fixed header + tabs, scrollable content per tab */
 }
 
+.screen-session .tab-content {
+  padding-top: calc(64px + var(--safe-top));
+  padding-bottom: calc(72px + var(--safe-bottom));
+}
+
 /* ── Top Bar ─────────────────────────────────────────────────────────────── */
 .top-bar {
   display: flex;
@@ -252,6 +257,57 @@ html, body {
   color: var(--text-bright);
 }
 
+.terminal-switcher {
+  gap: 10px;
+}
+
+.terminal-tab-list {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 1;
+  min-width: 0;
+  overflow-x: auto;
+}
+
+.terminal-tab-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: 0 0 auto;
+  max-width: 170px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: rgba(255,255,255,0.03);
+  color: var(--text-dim);
+  padding: 5px 9px;
+  font-size: 12px;
+  font-family: var(--sans);
+  cursor: pointer;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.terminal-tab-btn.active {
+  border-color: var(--accent);
+  color: var(--text-bright);
+  background: rgba(74,222,128,0.08);
+}
+
+.terminal-tab-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 999px;
+  background: var(--text-dim);
+  flex: 0 0 auto;
+}
+
+.terminal-tab-dot.alive {
+  background: #4ade80;
+  box-shadow: 0 0 8px rgba(74,222,128,0.6);
+}
+
 /* ── Terminal ─────────────────────────────────────────────────────────────── */
 .terminal-outer {
   flex: 1;
@@ -370,6 +426,37 @@ html, body {
   min-height: 1.55em;
   -webkit-user-select: text;
   user-select: text;
+}
+
+.terminal-input-line {
+  display: flex;
+  align-items: baseline;
+  min-height: 1.55em;
+  white-space: pre;
+}
+
+.terminal-input-prompt {
+  flex: 0 0 auto;
+}
+
+.terminal-inline-input {
+  flex: 1;
+  min-width: 2ch;
+  height: 1.55em;
+  padding: 0;
+  border: 0;
+  outline: 0;
+  resize: none;
+  overflow: hidden;
+  background: transparent;
+  color: #c8ffc8;
+  caret-color: var(--accent);
+  font: inherit;
+  line-height: 1.55;
+}
+
+.terminal-inline-input:disabled {
+  color: var(--text-dim);
 }
 
 .terminal-line.selectable-line {

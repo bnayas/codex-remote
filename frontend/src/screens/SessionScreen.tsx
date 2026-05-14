@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { Session, ChangedFile, ScheduledMessage } from '../types';
+import { Session, ChangedFile, ScheduledMessage, ShellTerminal } from '../types';
 import { api } from '../api';
 import { elapsed, timeSince, statusColor, agentDisplayName } from '../utils';
 import { Terminal } from '../components/Terminal';
@@ -28,10 +28,27 @@ export function SessionScreen({
   const [agentConnected, setAgentConnected] = useState(false);
   const [terminalConnected, setTerminalConnected] = useState(false);
   const [scheduled, setScheduled] = useState<ScheduledMessage[]>([]);
+  const [terminals, setTerminals] = useState<ShellTerminal[]>([]);
+  const [activeTerminalId, setActiveTerminalId] = useState('');
+  const [creatingTerminal, setCreatingTerminal] = useState(false);
 
   const fetchScheduled = useCallback(() => {
     api.getScheduledMessages(session.id).then(setScheduled).catch(err => {
       console.error('Failed to load scheduled messages:', err);
+    });
+  }, [session.id]);
+
+  const fetchTerminals = useCallback(() => {
+    api.getShellTerminals(session.id).then(items => {
+      setTerminals(items);
+      setActiveTerminalId(current => {
+        const nextId = current || items[0]?.id || '';
+        const active = items.find(t => t.id === nextId) ?? items[0];
+        setTerminalAlive(active?.alive ?? false);
+        return nextId;
+      });
+    }).catch(err => {
+      console.error('Failed to load terminals:', err);
     });
   }, [session.id]);
 
@@ -44,7 +61,12 @@ export function SessionScreen({
   const handleTerminalState = useCallback((state: { connected: boolean; alive: boolean; status: string }) => {
     setTerminalConnected(state.connected);
     setTerminalAlive(state.alive);
-  }, []);
+    setTerminals(items => items.map(t => (
+      t.id === activeTerminalId
+        ? { ...t, alive: state.alive, status: state.status as ShellTerminal['status'] }
+        : t
+    )));
+  }, [activeTerminalId]);
 
   // Refresh session on mount
   useEffect(() => {
@@ -55,10 +77,11 @@ export function SessionScreen({
     }).catch(err => {
       console.error('Failed to refresh session:', err);
     });
+    fetchTerminals();
     fetchScheduled();
     const interval = setInterval(fetchScheduled, 10000);
     return () => clearInterval(interval);
-  }, [session.id, fetchScheduled]);
+  }, [session.id, fetchScheduled, fetchTerminals]);
 
   const noOutputSince = session.lastOutputAt
     ? Math.floor((Date.now() - new Date(session.lastOutputAt).getTime()) / 1000)
@@ -70,10 +93,28 @@ export function SessionScreen({
   const tabs: { id: TabId; label: string }[] = [
     { id: 'conversation', label: `${agentName} Chat` },
     { id: 'codex-term', label: `${agentName} Terminal` },
-    { id: 'terminal', label: 'Terminal' },
+    { id: 'terminal', label: `Terminals${terminals.length > 1 ? ` (${terminals.length})` : ''}` },
     { id: 'files', label: `Files${liveFiles.length ? ` (${liveFiles.length})` : ''}` },
     { id: 'plan', label: 'Plan' },
   ];
+
+  const activeTerminal = terminals.find(t => t.id === activeTerminalId) ?? terminals[0];
+  const activeTerminalAlive = activeTerminal?.alive ?? terminalAlive;
+
+  async function createTerminal() {
+    if (creatingTerminal) return;
+    setCreatingTerminal(true);
+    try {
+      const terminal = await api.createShellTerminal(session.id);
+      setTerminals(items => [...items, terminal]);
+      setActiveTerminalId(terminal.id);
+      setTerminalAlive(terminal.alive ?? false);
+    } catch (err) {
+      console.error('Failed to create terminal:', err);
+    } finally {
+      setCreatingTerminal(false);
+    }
+  }
 
   return (
     <div className="screen screen-session">
@@ -191,23 +232,44 @@ export function SessionScreen({
 
         {/* General Terminal tab — shell for manual operations */}
         <div className={`tab-pane ${tab !== 'terminal' ? 'tab-pane-hidden' : ''}`}>
+          <div className="agent-pane-toolbar terminal-switcher">
+            <span className="agent-pane-title">Terminals</span>
+            <div className="terminal-tab-list">
+              {terminals.map(t => (
+                <button
+                  key={t.id}
+                  className={`terminal-tab-btn ${activeTerminalId === t.id ? 'active' : ''}`}
+                  onClick={() => {
+                    setActiveTerminalId(t.id);
+                    setTerminalAlive(t.alive ?? false);
+                  }}
+                >
+                  <span className={`terminal-tab-dot ${t.alive ? 'alive' : ''}`} />
+                  {t.title}
+                </button>
+              ))}
+            </div>
+            <button className="btn-primary btn-sm" onClick={createTerminal} disabled={creatingTerminal}>
+              {creatingTerminal ? 'Creating...' : '+ New Terminal'}
+            </button>
+          </div>
           <ErrorBoundary fallbackMessage="Terminal rendering error">
-            <Terminal
-              sessionId={session.id}
-              channel="shell"
-              label="TERMINAL"
-              alive={terminalAlive}
-              onState={handleTerminalState}
-            />
+            {activeTerminal ? (
+              <Terminal
+                key={activeTerminal.id}
+                sessionId={session.id}
+                channel="shell"
+                terminalId={activeTerminal.id}
+                label={activeTerminal.title.toUpperCase()}
+                alive={activeTerminalAlive}
+                onState={handleTerminalState}
+                onSubmitInput={(text) => api.sendShellTerminalInput(session.id, activeTerminal.id, text)}
+              />
+            ) : (
+              <div className="terminal-empty">No terminal available.</div>
+            )}
           </ErrorBoundary>
-          <InputBar
-            sessionId={session.id}
-            disabled={!terminalAlive}
-            target="shell"
-            placeholder="Run shell command…"
-            allowSchedule={false}
-          />
-          <ControlBar sessionId={session.id} alive={terminalAlive} target="shell" />
+          <ControlBar sessionId={session.id} alive={!!activeTerminal && activeTerminalAlive} target="shell" terminalId={activeTerminal?.id} />
         </div>
 
         {/* Files tab */}

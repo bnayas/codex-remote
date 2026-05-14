@@ -6,6 +6,7 @@ export function InputBar({
   sessionId,
   disabled,
   target = 'agent',
+  terminalId,
   placeholder,
   allowSchedule = true,
   onSendOptimistic,
@@ -13,6 +14,7 @@ export function InputBar({
   sessionId: string;
   disabled?: boolean;
   target?: 'agent' | 'shell';
+  terminalId?: string;
   placeholder?: string;
   allowSchedule?: boolean;
   onSendOptimistic?: (text: string) => void;
@@ -25,7 +27,8 @@ export function InputBar({
     setSending(true);
     try {
       if (onSendOptimistic) onSendOptimistic(text);
-      if (target === 'shell') await api.sendShellInput(sessionId, text);
+      if (target === 'shell' && terminalId) await api.sendShellTerminalInput(sessionId, terminalId, text);
+      else if (target === 'shell') await api.sendShellInput(sessionId, text);
       else await api.sendInput(sessionId, text);
       setText('');
     } catch (err) {

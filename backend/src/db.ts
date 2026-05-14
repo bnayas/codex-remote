@@ -35,6 +35,18 @@ export interface Session {
   scrollbackPath: string;
 }
 
+export interface ShellTerminal {
+  id: string;
+  sessionId: string;
+  title: string;
+  status: 'starting' | 'running' | 'exited' | 'killed' | 'error' | 'unknown';
+  exitCode?: number;
+  startedAt: string;
+  endedAt?: string;
+  lastOutputAt?: string;
+  scrollbackPath: string;
+}
+
 export interface Plan {
   id: string;
   sessionId: string;
@@ -116,6 +128,19 @@ export function initDb(): void {
       kind TEXT NOT NULL,
       text TEXT,
       payload_json TEXT,
+      FOREIGN KEY(session_id) REFERENCES sessions(id)
+    );
+
+    CREATE TABLE IF NOT EXISTS shell_terminals (
+      id TEXT PRIMARY KEY,
+      session_id TEXT NOT NULL,
+      title TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'starting',
+      exit_code INTEGER,
+      started_at TEXT NOT NULL,
+      ended_at TEXT,
+      last_output_at TEXT,
+      scrollback_path TEXT NOT NULL,
       FOREIGN KEY(session_id) REFERENCES sessions(id)
     );
 
@@ -293,6 +318,75 @@ function rowToSession(row: Record<string, unknown>): Session {
     status: row.status as Session['status'],
     exitCode: row.exit_code as number | undefined,
     title: row.title as string | undefined,
+    startedAt: row.started_at as string,
+    endedAt: row.ended_at as string | undefined,
+    lastOutputAt: row.last_output_at as string | undefined,
+    scrollbackPath: row.scrollback_path as string,
+  };
+}
+
+export function createShellTerminal(t: Omit<ShellTerminal, 'startedAt'> & { startedAt?: string }): ShellTerminal {
+  const now = new Date().toISOString();
+  const terminal: ShellTerminal = { ...t, startedAt: t.startedAt ?? now };
+  db.prepare(`
+    INSERT INTO shell_terminals (
+      id, session_id, title, status, exit_code, started_at, ended_at, last_output_at, scrollback_path
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    terminal.id,
+    terminal.sessionId,
+    terminal.title,
+    terminal.status,
+    terminal.exitCode ?? null,
+    terminal.startedAt,
+    terminal.endedAt ?? null,
+    terminal.lastOutputAt ?? null,
+    terminal.scrollbackPath
+  );
+  return terminal;
+}
+
+export function getShellTerminalById(id: string): ShellTerminal | undefined {
+  const row = db.prepare('SELECT * FROM shell_terminals WHERE id = ?').get(id) as Record<string, unknown> | undefined;
+  return row ? rowToShellTerminal(row) : undefined;
+}
+
+export function getShellTerminalsBySession(sessionId: string): ShellTerminal[] {
+  return (db.prepare('SELECT * FROM shell_terminals WHERE session_id = ? ORDER BY started_at ASC').all(sessionId) as Record<string, unknown>[])
+    .map(rowToShellTerminal);
+}
+
+export function updateShellTerminalStatus(
+  id: string,
+  status: ShellTerminal['status'],
+  extras: { exitCode?: number; endedAt?: string; lastOutputAt?: string } = {}
+): void {
+  db.prepare(`
+    UPDATE shell_terminals SET status = ?, exit_code = COALESCE(?, exit_code),
+      ended_at = COALESCE(?, ended_at), last_output_at = COALESCE(?, last_output_at)
+    WHERE id = ?
+  `).run(
+    status,
+    extras.exitCode ?? null,
+    extras.endedAt ?? null,
+    extras.lastOutputAt ?? null,
+    id
+  );
+}
+
+export function touchShellTerminalOutput(id: string): void {
+  db.prepare('UPDATE shell_terminals SET last_output_at = ? WHERE id = ?')
+    .run(new Date().toISOString(), id);
+}
+
+function rowToShellTerminal(row: Record<string, unknown>): ShellTerminal {
+  return {
+    id: row.id as string,
+    sessionId: row.session_id as string,
+    title: row.title as string,
+    status: row.status as ShellTerminal['status'],
+    exitCode: row.exit_code as number | undefined,
     startedAt: row.started_at as string,
     endedAt: row.ended_at as string | undefined,
     lastOutputAt: row.last_output_at as string | undefined,

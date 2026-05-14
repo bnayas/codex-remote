@@ -5,6 +5,7 @@ import { buildWsUrl } from '../api';
 interface UseSessionStreamOptions {
   sessionId: string | null;
   channel?: 'agent' | 'shell';
+  terminalId?: string;
   onOutput?: (data: string) => void;
   onScrollback?: (lines: string[]) => void;
   onExit?: (info: { exitCode: number | null; status: string }) => void;
@@ -30,6 +31,7 @@ export function useSessionStream(opts: UseSessionStreamOptions): StreamState {
   const reconnectTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pingTimer = useRef<ReturnType<typeof setInterval> | null>(null);
   const unmounted = useRef(false);
+  const generation = useRef(0);
   const reconnectAttempts = useRef(0);
   const reconnectDelay = useRef(INITIAL_RECONNECT_DELAY_MS);
 
@@ -70,8 +72,8 @@ export function useSessionStream(opts: UseSessionStreamOptions): StreamState {
     }
   }, []);
 
-  const connect = useCallback(() => {
-    if (!opts.sessionId || unmounted.current) return;
+  const connect = useCallback((connectGeneration = generation.current) => {
+    if (!opts.sessionId || unmounted.current || connectGeneration !== generation.current) return;
 
     // Prevent duplicate connections
     if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) return;
@@ -82,7 +84,7 @@ export function useSessionStream(opts: UseSessionStreamOptions): StreamState {
       return;
     }
 
-    const url = buildWsUrl(opts.sessionId, opts.channel ?? 'agent');
+    const url = buildWsUrl(opts.sessionId, opts.channel ?? 'agent', opts.terminalId);
     let ws: WebSocket;
     try {
       ws = new WebSocket(url);
@@ -93,6 +95,10 @@ export function useSessionStream(opts: UseSessionStreamOptions): StreamState {
     wsRef.current = ws;
 
     ws.onopen = () => {
+      if (connectGeneration !== generation.current) {
+        ws.close();
+        return;
+      }
       reconnectAttempts.current = 0;
       reconnectDelay.current = INITIAL_RECONNECT_DELAY_MS;
       setState(s => ({ ...s, connected: true, error: undefined }));
@@ -107,6 +113,7 @@ export function useSessionStream(opts: UseSessionStreamOptions): StreamState {
     };
 
     ws.onmessage = (ev) => {
+      if (connectGeneration !== generation.current) return;
       try {
         const msg = JSON.parse(ev.data as string) as WsMessage;
         if (msg.type === 'connected') {
@@ -135,6 +142,7 @@ export function useSessionStream(opts: UseSessionStreamOptions): StreamState {
     };
 
     ws.onclose = () => {
+      if (connectGeneration !== generation.current) return;
       if (pingTimer.current) {
         clearInterval(pingTimer.current);
         pingTimer.current = null;
@@ -149,23 +157,27 @@ export function useSessionStream(opts: UseSessionStreamOptions): StreamState {
         reconnectDelay.current = Math.min(delay * 1.5, MAX_RECONNECT_DELAY_MS);
 
         if (reconnectTimer.current) clearTimeout(reconnectTimer.current);
-        reconnectTimer.current = setTimeout(connect, delay);
+        reconnectTimer.current = setTimeout(() => connect(connectGeneration), delay);
       }
     };
 
     ws.onerror = (err) => {
+      if (connectGeneration !== generation.current) return;
       console.error('[WS] WebSocket error:', err);
       setState(s => ({ ...s, error: 'WebSocket Error' }));
       ws.close();
     };
-  }, [opts.sessionId, opts.channel, cleanup]);
+  }, [opts.sessionId, opts.channel, opts.terminalId]);
 
   useEffect(() => {
+    const effectGeneration = generation.current + 1;
+    generation.current = effectGeneration;
     unmounted.current = false;
     reconnectAttempts.current = 0;
     reconnectDelay.current = INITIAL_RECONNECT_DELAY_MS;
-    connect();
+    connect(effectGeneration);
     return () => {
+      if (generation.current === effectGeneration) generation.current++;
       unmounted.current = true;
       cleanup();
     };
